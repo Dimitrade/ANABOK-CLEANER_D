@@ -12,6 +12,9 @@ jobs:
   build-android:
     name: Build APK (Android)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./anabok_cleaner
 
     steps:
       - name: Checkout code
@@ -40,12 +43,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apk-release
-          path: build/app/outputs/flutter-apk/app-*-release.apk
+          path: anabok_cleaner/build/app/outputs/flutter-apk/app-*-release.apk
           retention-days: 7
 
   build-windows:
     name: Build EXE (Windows)
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./anabok_cleaner
 
     steps:
       - name: Checkout code
@@ -69,7 +75,7 @@ jobs:
 
       - name: Zip Windows build
         run: |
-          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "anabok_cleaner_windows.zip"
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "..\anabok_cleaner_windows.zip"
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
