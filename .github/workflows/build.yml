@@ -35,7 +35,7 @@ jobs:
 
       - name: Create local.properties
         run: |
-          echo "flutter.sdk=$(dirname $(dirname $(which flutter)))" > android/local.properties
+          echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
           echo "sdk.dir=$ANDROID_SDK_ROOT" >> android/local.properties
 
       - name: Build APK release
@@ -70,7 +70,7 @@ jobs:
         run: flutter pub get
 
       - name: Generate Windows platform files
-        run: flutter create . --platforms windows
+        run: flutter create . --platforms windows --project-name anabok_cleaner
 
       - name: Build Windows release
         run: flutter build windows --release
