@@ -6,8 +6,7 @@ plugins {
 
 android {
     namespace "com.anabok.cleaner"
-    compileSdk flutter.compileSdkVersion
-    ndkVersion flutter.ndkVersion
+    compileSdk 34
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -25,9 +24,9 @@ android {
     defaultConfig {
         applicationId "com.anabok.cleaner"
         minSdkVersion 21
-        targetSdkVersion flutter.targetSdkVersion
-        versionCode flutter.versionCode
-        versionName flutter.versionName
+        targetSdkVersion 34
+        versionCode 1
+        versionName "1.0.0"
     }
 
     buildTypes {
