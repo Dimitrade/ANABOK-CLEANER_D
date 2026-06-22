@@ -370,21 +370,13 @@ class _VideoDownloaderScreenState extends State<VideoDownloaderScreen> {
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    backgroundColor: Colors.transparent,
-                    shadowColor: Colors.transparent,
-                  ).copyWith(
-                    backgroundColor: WidgetStateProperty.all(Colors.transparent),
-                  ),
-                  onPressed: _addDownload,
-                  icon: const Icon(Icons.download_rounded, color: Colors.white),
-                  label: const Text('Télécharger', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                  style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFE94560),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
+                  onPressed: _addDownload,
+                  icon: const Icon(Icons.download_rounded, color: Colors.white),
+                  label: const Text('Télécharger', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
                 ),
               ),
             ],
