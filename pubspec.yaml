@@ -1,0 +1,49 @@
+name: anabok_cleaner
+description: ANABOK CLEANER - Gestionnaire de fichiers et téléchargeur vidéo
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Gestion de fichiers
+  path_provider: ^2.1.2
+  file_picker: ^8.0.3
+  permission_handler: ^11.3.0
+  
+  # UI
+  flutter_slidable: ^3.1.0
+  percent_indicator: ^4.2.3
+  fl_chart: ^0.68.0
+  google_fonts: ^6.2.1
+  
+  # Téléchargement vidéo via yt-dlp (via processus natif)
+  # Sur Windows: shell commands
+  # Sur Android: via flutter_downloader
+  flutter_downloader: ^1.11.7
+  dio: ^5.4.3
+  
+  # Partage & ouverture de fichiers
+  open_file: ^3.3.2
+  share_plus: ^9.0.0
+  
+  # Divers
+  intl: ^0.19.0
+  url_launcher: ^6.2.6
+  shared_preferences: ^2.2.3
+  path: ^1.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
