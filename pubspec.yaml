@@ -22,10 +22,8 @@ dependencies:
   fl_chart: ^0.68.0
   google_fonts: ^6.2.1
   
-  # Téléchargement vidéo via yt-dlp (via processus natif)
-  # Sur Windows: shell commands
-  # Sur Android: via flutter_downloader
-  flutter_downloader: ^1.11.7
+  # Téléchargement vidéo - pure Dart, sans dépendance externe
+  youtube_explode_dart: ^2.0.3
   dio: ^5.4.3
   
   # Partage & ouverture de fichiers
