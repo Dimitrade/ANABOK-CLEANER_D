@@ -35,16 +35,25 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             child: Row(
               children: [
-                Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFE94560), Color(0xFFFF6B35)],
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.asset(
+                    'assets/logo_icon.png',
+                    width: 42,
+                    height: 42,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFFE94560), Color(0xFFFF6B35)],
+                        ),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.cleaning_services, color: Colors.white, size: 22),
                     ),
-                    borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(Icons.cleaning_services, color: Colors.white, size: 22),
                 ),
                 const SizedBox(width: 12),
                 Column(
