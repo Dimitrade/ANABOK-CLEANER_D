@@ -1,10 +1,12 @@
 import 'dart:io';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_file/open_file.dart';
 import 'package:intl/intl.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import 'package:dio/dio.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class VideoDownloaderScreen extends StatefulWidget {
   const VideoDownloaderScreen({super.key});
@@ -16,27 +18,26 @@ class VideoDownloaderScreen extends StatefulWidget {
 class _VideoDownloaderScreenState extends State<VideoDownloaderScreen> {
   final TextEditingController _urlController = TextEditingController();
   List<DownloadTask> _downloads = [];
-  bool _isChecking = false;
-  String _selectedFormat = 'Meilleure qualité';
+  String _selectedQuality = 'Meilleure qualité';
   bool _audioOnly = false;
 
-  final List<String> _formats = [
+  final List<String> _qualities = [
     'Meilleure qualité',
-    '1080p',
     '720p',
     '480p',
     '360p',
+    'Audio MP3',
   ];
 
-  // Supported sites indicator
   final List<Map<String, dynamic>> _supportedSites = [
     {'name': 'YouTube', 'icon': Icons.play_circle_filled, 'color': Color(0xFFE94560)},
-    {'name': 'TikTok', 'icon': Icons.music_video, 'color': Color(0xFF4ECDC4)},
-    {'name': 'Facebook', 'icon': Icons.facebook, 'color': Color(0xFF3B82F6)},
-    {'name': 'Twitter/X', 'icon': Icons.close, 'color': Colors.white70},
-    {'name': 'Instagram', 'icon': Icons.camera_alt, 'color': Color(0xFFFF6B35)},
-    {'name': 'Dailymotion', 'icon': Icons.ondemand_video, 'color': Color(0xFF8B5CF6)},
+    {'name': 'Lien direct', 'icon': Icons.link, 'color': Color(0xFF4ECDC4)},
+    {'name': 'MP4/MP3', 'icon': Icons.music_video, 'color': Color(0xFFFF6B35)},
   ];
+
+  bool _isYouTubeUrl(String url) {
+    return url.contains('youtube.com') || url.contains('youtu.be');
+  }
 
   Future<void> _addDownload() async {
     final url = _urlController.text.trim();
@@ -55,7 +56,7 @@ class _VideoDownloaderScreenState extends State<VideoDownloaderScreen> {
     final task = DownloadTask(
       url: url,
       title: _extractTitle(url),
-      format: _selectedFormat,
+      quality: _audioOnly ? 'Audio MP3' : _selectedQuality,
       audioOnly: _audioOnly,
       addedAt: DateTime.now(),
     );
@@ -72,191 +73,203 @@ class _VideoDownloaderScreenState extends State<VideoDownloaderScreen> {
     try {
       final uri = Uri.parse(url);
       final v = uri.queryParameters['v'];
-      if (v != null) return 'YouTube - $v';
+      if (v != null) return 'YouTube vidéo';
       final host = uri.host.replaceAll('www.', '');
-      return '$host - Vidéo';
+      final pathParts = uri.pathSegments;
+      if (pathParts.isNotEmpty) return pathParts.last;
+      return host;
     } catch (_) {
       return 'Vidéo';
     }
   }
 
-  Future<void> _startDownload(DownloadTask task) async {
-    setState(() => task.status = DownloadStatus.downloading);
-
-    try {
-      final outputDir = await _getDownloadDirectory();
-      
-      if (Platform.isWindows) {
-        await _downloadWindows(task, outputDir);
-      } else if (Platform.isAndroid) {
-        await _downloadAndroid(task, outputDir);
-      } else {
-        await _downloadFallback(task, outputDir);
+  Future<String> _getDownloadDir() async {
+    if (Platform.isAndroid) {
+      // Request storage permission
+      if (await Permission.storage.isDenied) {
+        await Permission.storage.request();
       }
-    } catch (e) {
-      setState(() {
-        task.status = DownloadStatus.failed;
-        task.errorMessage = e.toString();
-      });
-    }
-  }
-
-  Future<String> _getDownloadDirectory() async {
-    if (Platform.isWindows) {
-      // Windows: use Downloads folder
+      final dir = Directory('/storage/emulated/0/Download/ANABOK');
+      await dir.create(recursive: true);
+      return dir.path;
+    } else if (Platform.isWindows) {
       final home = Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
       final dir = Directory('$home\\Downloads\\ANABOK');
       await dir.create(recursive: true);
       return dir.path;
     } else {
-      // Android
-      final dir = Directory('/storage/emulated/0/Download/ANABOK');
+      final appDir = await getApplicationDocumentsDirectory();
+      final dir = Directory('${appDir.path}/ANABOK');
       await dir.create(recursive: true);
       return dir.path;
     }
   }
 
-  /// Windows: use yt-dlp executable
-  Future<void> _downloadWindows(DownloadTask task, String outputDir) async {
-    // Check if yt-dlp is available
-    final ytdlpPath = await _findYtDlp();
-    
-    final qualityArgs = _getQualityArgs(task.format, task.audioOnly);
-    final outputTemplate = '$outputDir\\%(title)s.%(ext)s';
+  Future<void> _startDownload(DownloadTask task) async {
+    setState(() {
+      task.status = DownloadStatus.downloading;
+      task.progress = 0;
+    });
 
-    final args = [
-      ...qualityArgs,
-      '--output', outputTemplate,
-      '--no-playlist',
-      '--progress',
-      task.url,
-    ];
+    try {
+      final outputDir = await _getDownloadDir();
 
-    final process = await Process.start(ytdlpPath, args);
-    
-    // Parse progress from stdout
-    process.stdout.transform(utf8.decoder).listen((data) {
-      final match = RegExp(r'(\d+\.\d+)%').firstMatch(data);
-      if (match != null) {
-        final pct = double.tryParse(match.group(1) ?? '0') ?? 0;
-        setState(() => task.progress = pct / 100);
+      if (_isYouTubeUrl(task.url)) {
+        await _downloadYouTube(task, outputDir);
+      } else {
+        await _downloadDirect(task, outputDir);
       }
-      if (data.contains('Destination:')) {
-        final pathMatch = RegExp(r'Destination:\s*(.+)').firstMatch(data);
-        if (pathMatch != null) {
-          task.savedPath = pathMatch.group(1)?.trim();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          task.status = DownloadStatus.failed;
+          task.errorMessage = e.toString().replaceAll('Exception: ', '');
+        });
+      }
+    }
+  }
+
+  Future<void> _downloadYouTube(DownloadTask task, String outputDir) async {
+    final yt = YoutubeExplode();
+    try {
+      final video = await yt.videos.get(task.url);
+      if (mounted) {
+        setState(() => task.title = video.title);
+      }
+
+      final manifest = await yt.videos.streamsClient.getManifest(video.id);
+
+      if (task.audioOnly || task.quality == 'Audio MP3') {
+        // Audio only
+        final audio = manifest.audioOnly.withHighestBitrate();
+        final fileName = _sanitizeFilename('${video.title}.mp3');
+        final filePath = '$outputDir/$fileName';
+        final stream = yt.videos.streamsClient.get(audio);
+        final file = File(filePath);
+        final sink = file.openWrite();
+        final total = audio.size.totalBytes;
+        int received = 0;
+
+        await for (final data in stream) {
+          sink.add(data);
+          received += data.length;
+          if (mounted) {
+            setState(() => task.progress = received / total);
+          }
+        }
+        await sink.flush();
+        await sink.close();
+
+        if (mounted) {
+          setState(() {
+            task.status = DownloadStatus.completed;
+            task.progress = 1.0;
+            task.savedPath = filePath;
+          });
+        }
+      } else {
+        // Video + audio (muxed for simplicity)
+        MuxedStreamInfo streamInfo;
+        switch (task.quality) {
+          case '720p':
+            streamInfo = manifest.muxed.firstWhere(
+              (s) => s.videoResolution.height <= 720,
+              orElse: () => manifest.muxed.withHighestBitrate(),
+            );
+            break;
+          case '480p':
+            streamInfo = manifest.muxed.firstWhere(
+              (s) => s.videoResolution.height <= 480,
+              orElse: () => manifest.muxed.withHighestBitrate(),
+            );
+            break;
+          case '360p':
+            streamInfo = manifest.muxed.firstWhere(
+              (s) => s.videoResolution.height <= 360,
+              orElse: () => manifest.muxed.withHighestBitrate(),
+            );
+            break;
+          default:
+            streamInfo = manifest.muxed.withHighestBitrate();
+        }
+
+        final ext = streamInfo.container.name;
+        final fileName = _sanitizeFilename('${video.title}.$ext');
+        final filePath = '$outputDir/$fileName';
+        final stream = yt.videos.streamsClient.get(streamInfo);
+        final file = File(filePath);
+        final sink = file.openWrite();
+        final total = streamInfo.size.totalBytes;
+        int received = 0;
+
+        await for (final data in stream) {
+          sink.add(data);
+          received += data.length;
+          if (mounted) {
+            setState(() => task.progress = received / total);
+          }
+        }
+        await sink.flush();
+        await sink.close();
+
+        if (mounted) {
+          setState(() {
+            task.status = DownloadStatus.completed;
+            task.progress = 1.0;
+            task.savedPath = filePath;
+          });
         }
       }
-    });
+    } finally {
+      yt.close();
+    }
+  }
 
-    process.stderr.transform(utf8.decoder).listen((data) {
-      debugPrint('yt-dlp stderr: $data');
-    });
+  Future<void> _downloadDirect(DownloadTask task, String outputDir) async {
+    final dio = Dio();
+    final uri = Uri.parse(task.url);
+    final fileName = uri.pathSegments.isNotEmpty
+        ? _sanitizeFilename(uri.pathSegments.last)
+        : 'download_${DateTime.now().millisecondsSinceEpoch}';
+    final filePath = '$outputDir/$fileName';
 
-    final exitCode = await process.exitCode;
-    
-    setState(() {
-      if (exitCode == 0) {
+    await dio.download(
+      task.url,
+      filePath,
+      onReceiveProgress: (received, total) {
+        if (total > 0 && mounted) {
+          setState(() => task.progress = received / total);
+        }
+      },
+    );
+
+    if (mounted) {
+      setState(() {
         task.status = DownloadStatus.completed;
         task.progress = 1.0;
-      } else {
-        task.status = DownloadStatus.failed;
-        task.errorMessage = 'yt-dlp a retourné le code $exitCode';
-      }
-    });
-  }
-
-  /// Android: use yt-dlp via Termux or built-in
-  Future<void> _downloadAndroid(DownloadTask task, String outputDir) async {
-    // Try yt-dlp via shell
-    final ytdlp = await _findYtDlpAndroid();
-    
-    if (ytdlp == null) {
-      // Fallback: open in browser
-      setState(() {
-        task.status = DownloadStatus.failed;
-        task.errorMessage = 'yt-dlp non trouvé.\nInstalle Termux + yt-dlp ou utilise la méthode navigateur.';
+        task.savedPath = filePath;
       });
-      return;
     }
-
-    final qualityArgs = _getQualityArgs(task.format, task.audioOnly);
-    final outputTemplate = '$outputDir/%(title)s.%(ext)s';
-
-    final args = [
-      ...qualityArgs,
-      '--output', outputTemplate,
-      '--no-playlist',
-      task.url,
-    ];
-
-    final process = await Process.start(ytdlp, args);
-
-    process.stdout.transform(utf8.decoder).listen((data) {
-      final match = RegExp(r'(\d+\.\d+)%').firstMatch(data);
-      if (match != null) {
-        final pct = double.tryParse(match.group(1) ?? '0') ?? 0;
-        setState(() => task.progress = pct / 100);
-      }
-    });
-
-    final exitCode = await process.exitCode;
-    setState(() {
-      task.status = exitCode == 0 ? DownloadStatus.completed : DownloadStatus.failed;
-      if (exitCode == 0) task.progress = 1.0;
-    });
   }
 
-  Future<void> _downloadFallback(DownloadTask task, String outputDir) async {
-    // Generic fallback
-    await Future.delayed(const Duration(seconds: 2));
-    setState(() {
-      task.status = DownloadStatus.failed;
-      task.errorMessage = 'Plateforme non supportée pour le téléchargement automatique.';
-    });
-  }
-
-  Future<String> _findYtDlp() async {
-    final candidates = [
-      'yt-dlp',
-      r'C:\yt-dlp\yt-dlp.exe',
-      r'C:\Program Files\yt-dlp\yt-dlp.exe',
-    ];
-    for (final c in candidates) {
-      try {
-        final result = await Process.run(c, ['--version']);
-        if (result.exitCode == 0) return c;
-      } catch (_) {}
-    }
-    throw Exception('yt-dlp non trouvé. Veuillez l\'installer: https://github.com/yt-dlp/yt-dlp/releases');
-  }
-
-  Future<String?> _findYtDlpAndroid() async {
-    final candidates = [
-      '/data/data/com.termux/files/usr/bin/yt-dlp',
-      '/usr/local/bin/yt-dlp',
-    ];
-    for (final c in candidates) {
-      if (await File(c).exists()) return c;
-    }
-    return null;
-  }
-
-  List<String> _getQualityArgs(String format, bool audioOnly) {
-    if (audioOnly) {
-      return ['-x', '--audio-format', 'mp3', '--audio-quality', '0'];
-    }
-    switch (format) {
-      case '1080p': return ['-f', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]', '--merge-output-format', 'mp4'];
-      case '720p': return ['-f', 'bestvideo[height<=720]+bestaudio/best[height<=720]', '--merge-output-format', 'mp4'];
-      case '480p': return ['-f', 'bestvideo[height<=480]+bestaudio/best[height<=480]', '--merge-output-format', 'mp4'];
-      case '360p': return ['-f', 'bestvideo[height<=360]+bestaudio/best[height<=360]', '--merge-output-format', 'mp4'];
-      default: return ['-f', 'bestvideo+bestaudio/best', '--merge-output-format', 'mp4'];
-    }
+  String _sanitizeFilename(String name) {
+    return name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
   }
 
   void _removeDownload(DownloadTask task) {
     setState(() => _downloads.remove(task));
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    super.dispose();
   }
 
   @override
@@ -300,10 +313,18 @@ class _VideoDownloaderScreenState extends State<VideoDownloaderScreen> {
                           },
                         ),
                         filled: true,
-                        fillColor: const Color(0xFF0F0F1A),
+                        fillColor: const Color(0xFF16213E),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(10),
-                          borderSide: BorderSide.none,
+                          borderSide: const BorderSide(color: Color(0xFF2A2A4E)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: Color(0xFF2A2A4E)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: Color(0xFFE94560)),
                         ),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       ),
@@ -314,175 +335,235 @@ class _VideoDownloaderScreenState extends State<VideoDownloaderScreen> {
               const SizedBox(height: 10),
               Row(
                 children: [
-                  // Format dropdown
                   Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF0F0F1A),
-                        borderRadius: BorderRadius.circular(8),
+                    child: DropdownButtonFormField<String>(
+                      value: _audioOnly ? 'Audio MP3' : _selectedQuality,
+                      dropdownColor: const Color(0xFF1A1A2E),
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: const Color(0xFF16213E),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: Color(0xFF2A2A4E)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: Color(0xFF2A2A4E)),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
-                      child: DropdownButton<String>(
-                        value: _selectedFormat,
-                        dropdownColor: const Color(0xFF1A1A2E),
-                        style: const TextStyle(color: Colors.white70, fontSize: 12),
-                        underline: const SizedBox(),
-                        isExpanded: true,
-                        items: _formats.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
-                        onChanged: (v) => setState(() => _selectedFormat = v!),
-                      ),
+                      items: _qualities.map((q) => DropdownMenuItem(
+                        value: q,
+                        child: Text(q, style: const TextStyle(color: Colors.white)),
+                      )).toList(),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setState(() {
+                            _audioOnly = val == 'Audio MP3';
+                            if (!_audioOnly) _selectedQuality = val;
+                          });
+                        }
+                      },
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  // Audio only toggle
-                  GestureDetector(
-                    onTap: () => setState(() => _audioOnly = !_audioOnly),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 150),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: _audioOnly ? const Color(0xFF4ECDC4).withOpacity(0.2) : const Color(0xFF0F0F1A),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: _audioOnly ? const Color(0xFF4ECDC4) : Colors.transparent,
-                        ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 130,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFE94560),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.music_note, size: 14, color: _audioOnly ? const Color(0xFF4ECDC4) : Colors.white38),
-                          const SizedBox(width: 4),
-                          Text(
-                            'MP3',
-                            style: TextStyle(
-                              color: _audioOnly ? const Color(0xFF4ECDC4) : Colors.white38,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
+                      onPressed: _addDownload,
+                      icon: const Icon(Icons.download_rounded, color: Colors.white, size: 16),
+                      label: const Text('Télécharger', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12)),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFE94560),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                  onPressed: _addDownload,
-                  icon: const Icon(Icons.download_rounded, color: Colors.white),
-                  label: const Text('Télécharger', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                ),
-              ),
             ],
           ),
         ),
 
-        // Supported sites
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Sites supportés', style: TextStyle(color: Colors.white38, fontSize: 11)),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                children: _supportedSites.map((s) => Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(s['icon'] as IconData, size: 12, color: s['color'] as Color),
-                    const SizedBox(width: 4),
-                    Text(s['name'] as String, style: TextStyle(color: s['color'] as Color, fontSize: 11)),
-                  ],
-                )).toList(),
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 12),
-        const Divider(color: Color(0xFF2A2A4E), height: 1),
-        const SizedBox(height: 8),
-
-        // Downloads list
+        // Supported sites chips
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Row(
             children: [
-              Text(
-                '${_downloads.length} téléchargement(s)',
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-              const Spacer(),
-              if (_downloads.any((d) => d.status == DownloadStatus.completed))
-                TextButton(
-                  onPressed: () => setState(() => _downloads.removeWhere((d) => d.status == DownloadStatus.completed)),
-                  child: const Text('Effacer terminés', style: TextStyle(color: Colors.white38, fontSize: 11)),
+              const Text('Supporte :', style: TextStyle(color: Colors.white38, fontSize: 11)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Wrap(
+                  spacing: 6,
+                  children: _supportedSites.map((site) => Chip(
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    label: Text(site['name'], style: const TextStyle(color: Colors.white, fontSize: 10)),
+                    avatar: Icon(site['icon'], size: 14, color: site['color']),
+                    backgroundColor: const Color(0xFF1A1A2E),
+                    side: BorderSide(color: site['color'], width: 0.5),
+                    padding: EdgeInsets.zero,
+                  )).toList(),
                 ),
+              ),
             ],
           ),
         ),
 
+        const SizedBox(height: 8),
+
+        // Downloads list
         Expanded(
           child: _downloads.isEmpty
               ? Center(
                   child: Column(
-                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.download_rounded, size: 60, color: Colors.white12),
+                      Icon(Icons.download_rounded, size: 64, color: Colors.white12),
                       const SizedBox(height: 12),
-                      const Text('Collez un lien pour commencer', style: TextStyle(color: Colors.white24)),
+                      const Text('Collez un lien YouTube ou direct', style: TextStyle(color: Colors.white38, fontSize: 14)),
+                      const SizedBox(height: 4),
+                      const Text('Aucune installation externe requise', style: TextStyle(color: Colors.white24, fontSize: 12)),
                     ],
                   ),
                 )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   itemCount: _downloads.length,
-                  itemBuilder: (_, i) => _DownloadCard(
-                    task: _downloads[i],
-                    onRemove: () => _removeDownload(_downloads[i]),
-                    onRetry: () => _startDownload(_downloads[i]),
-                  ),
+                  itemBuilder: (ctx, i) => _buildDownloadCard(_downloads[i]),
                 ),
         ),
+      ],
+    );
+  }
 
-        // yt-dlp install note
-        Container(
-          margin: const EdgeInsets.all(12),
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1A1A2E),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF2A2A4E)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildDownloadCard(DownloadTask task) {
+    Color statusColor;
+    IconData statusIcon;
+    String statusText;
+
+    switch (task.status) {
+      case DownloadStatus.downloading:
+        statusColor = const Color(0xFF4ECDC4);
+        statusIcon = Icons.downloading;
+        statusText = '${(task.progress * 100).toStringAsFixed(0)}%';
+        break;
+      case DownloadStatus.completed:
+        statusColor = const Color(0xFF4CAF50);
+        statusIcon = Icons.check_circle;
+        statusText = 'Terminé';
+        break;
+      case DownloadStatus.failed:
+        statusColor = const Color(0xFFE94560);
+        statusIcon = Icons.error;
+        statusText = 'Échec';
+        break;
+      default:
+        statusColor = Colors.white38;
+        statusIcon = Icons.hourglass_empty;
+        statusText = 'En attente';
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF2A2A4E)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  const Icon(Icons.info_outline, color: Color(0xFF4ECDC4), size: 14),
-                  const SizedBox(width: 6),
-                  const Text('Prérequis', style: TextStyle(color: Color(0xFF4ECDC4), fontSize: 12, fontWeight: FontWeight.w600)),
-                ],
+              Icon(statusIcon, color: statusColor, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  task.title,
+                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                Platform.isWindows
-                    ? '• Télécharger yt-dlp.exe depuis github.com/yt-dlp\n• Placer dans C:\\yt-dlp\\ ou dans le PATH Windows\n• Optionnel: installer FFmpeg pour les meilleures qualités'
-                    : '• Sur Android: installer Termux, puis: pkg install yt-dlp\n• Ou utiliser la version APK avec yt-dlp inclus',
-                style: const TextStyle(color: Colors.white38, fontSize: 10, height: 1.5),
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                onPressed: () => _removeDownload(task),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
               ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 4),
+          Text(
+            task.quality,
+            style: const TextStyle(color: Colors.white38, fontSize: 11),
+          ),
+          if (task.status == DownloadStatus.downloading) ...[
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: task.progress,
+                backgroundColor: const Color(0xFF2A2A4E),
+                valueColor: AlwaysStoppedAnimation<Color>(statusColor),
+                minHeight: 6,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(statusText, style: TextStyle(color: statusColor, fontSize: 11)),
+          ],
+          if (task.status == DownloadStatus.failed && task.errorMessage != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              task.errorMessage!,
+              style: TextStyle(color: statusColor, fontSize: 11),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 4),
+            TextButton.icon(
+              onPressed: () => _startDownload(task),
+              icon: const Icon(Icons.refresh, size: 14),
+              label: const Text('Réessayer', style: TextStyle(fontSize: 12)),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFFE94560),
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+              ),
+            ),
+          ],
+          if (task.status == DownloadStatus.completed && task.savedPath != null) ...[
+            const SizedBox(height: 6),
+            TextButton.icon(
+              onPressed: () => OpenFile.open(task.savedPath!),
+              icon: const Icon(Icons.folder_open, size: 14),
+              label: Text(
+                task.savedPath!.split(Platform.isWindows ? '\\' : '/').last,
+                style: const TextStyle(fontSize: 11),
+                overflow: TextOverflow.ellipsis,
+              ),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFF4CAF50),
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+              ),
+            ),
+          ],
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Icon(Icons.schedule, size: 11, color: Colors.white24),
+              const SizedBox(width: 4),
+              Text(
+                DateFormat('HH:mm').format(task.addedAt),
+                style: const TextStyle(color: Colors.white24, fontSize: 11),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -490,161 +571,21 @@ class _VideoDownloaderScreenState extends State<VideoDownloaderScreen> {
 enum DownloadStatus { pending, downloading, completed, failed }
 
 class DownloadTask {
-  final String url;
+  String url;
   String title;
-  final String format;
-  final bool audioOnly;
-  final DateTime addedAt;
-  DownloadStatus status;
-  double progress;
+  String quality;
+  bool audioOnly;
+  DateTime addedAt;
+  DownloadStatus status = DownloadStatus.pending;
+  double progress = 0;
   String? savedPath;
   String? errorMessage;
 
   DownloadTask({
     required this.url,
     required this.title,
-    required this.format,
+    required this.quality,
     required this.audioOnly,
     required this.addedAt,
-    this.status = DownloadStatus.pending,
-    this.progress = 0,
-    this.savedPath,
-    this.errorMessage,
   });
-}
-
-class _DownloadCard extends StatelessWidget {
-  final DownloadTask task;
-  final VoidCallback onRemove;
-  final VoidCallback onRetry;
-
-  const _DownloadCard({required this.task, required this.onRemove, required this.onRetry});
-
-  Color get _statusColor {
-    switch (task.status) {
-      case DownloadStatus.completed: return const Color(0xFF2ECC71);
-      case DownloadStatus.failed: return const Color(0xFFE94560);
-      case DownloadStatus.downloading: return const Color(0xFF4ECDC4);
-      default: return Colors.white38;
-    }
-  }
-
-  String get _statusLabel {
-    switch (task.status) {
-      case DownloadStatus.completed: return 'Terminé';
-      case DownloadStatus.failed: return 'Échec';
-      case DownloadStatus.downloading: return '${(task.progress * 100).toStringAsFixed(0)}%';
-      default: return 'En attente';
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1A1A2E),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _statusColor.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: _statusColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(
-                  task.audioOnly ? Icons.music_note : Icons.videocam,
-                  color: _statusColor,
-                  size: 18,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      task.title,
-                      style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    Text(
-                      '${task.format} • ${task.audioOnly ? "MP3" : "MP4"} • ${DateFormat('HH:mm').format(task.addedAt)}',
-                      style: const TextStyle(color: Colors.white38, fontSize: 10),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _statusLabel,
-                style: TextStyle(color: _statusColor, fontSize: 12, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(width: 6),
-              if (task.status == DownloadStatus.completed)
-                IconButton(
-                  icon: const Icon(Icons.folder_open, size: 16, color: Color(0xFF2ECC71)),
-                  onPressed: () => OpenFile.open(task.savedPath ?? ''),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                )
-              else if (task.status == DownloadStatus.failed)
-                IconButton(
-                  icon: const Icon(Icons.refresh, size: 16, color: Color(0xFFE94560)),
-                  onPressed: onRetry,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-              const SizedBox(width: 4),
-              IconButton(
-                icon: const Icon(Icons.close, size: 16, color: Colors.white38),
-                onPressed: onRemove,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-              ),
-            ],
-          ),
-
-          // Progress bar
-          if (task.status == DownloadStatus.downloading) ...[
-            const SizedBox(height: 8),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: task.progress,
-                backgroundColor: const Color(0xFF0F0F1A),
-                valueColor: const AlwaysStoppedAnimation(Color(0xFF4ECDC4)),
-                minHeight: 4,
-              ),
-            ),
-          ],
-
-          // Error message
-          if (task.status == DownloadStatus.failed && task.errorMessage != null) ...[
-            const SizedBox(height: 6),
-            Text(
-              task.errorMessage!,
-              style: const TextStyle(color: Color(0xFFE94560), fontSize: 10),
-            ),
-          ],
-
-          // URL preview
-          const SizedBox(height: 4),
-          Text(
-            task.url,
-            style: const TextStyle(color: Colors.white24, fontSize: 9),
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
-    );
-  }
 }

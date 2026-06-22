@@ -45,9 +45,23 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
 
   Future<void> _requestPermissionAndScan() async {
     if (Platform.isAndroid) {
-      final status = await Permission.manageExternalStorage.request();
-      if (!status.isGranted) {
-        await Permission.storage.request();
+      // Android 11+ : MANAGE_EXTERNAL_STORAGE via paramètres système
+      if (await Permission.manageExternalStorage.isGranted) {
+        await _scanFiles();
+        return;
+      }
+      // Tenter d'abord les permissions media (Android 13+)
+      final results = await [
+        Permission.storage,
+        Permission.photos,
+        Permission.videos,
+        Permission.audio,
+      ].request();
+
+      final anyGranted = results.values.any((s) => s.isGranted);
+      if (!anyGranted) {
+        // Demander MANAGE_EXTERNAL_STORAGE via paramètres
+        await Permission.manageExternalStorage.request();
       }
     }
     await _scanFiles();
@@ -67,7 +81,26 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
       List<Directory> roots = [];
 
       if (Platform.isAndroid) {
-        roots.add(Directory('/storage/emulated/0'));
+        // Si MANAGE_EXTERNAL_STORAGE → scan complet, sinon dossiers accessibles
+        final hasFullAccess = await Permission.manageExternalStorage.isGranted;
+        if (hasFullAccess) {
+          roots.add(Directory('/storage/emulated/0'));
+        } else {
+          // Dossiers accessibles sans permission spéciale
+          for (final path in [
+            '/storage/emulated/0/Download',
+            '/storage/emulated/0/Downloads',
+            '/storage/emulated/0/DCIM',
+            '/storage/emulated/0/Pictures',
+            '/storage/emulated/0/Movies',
+            '/storage/emulated/0/Music',
+            '/storage/emulated/0/Documents',
+            '/storage/emulated/0/WhatsApp',
+          ]) {
+            final d = Directory(path);
+            if (await d.exists()) roots.add(d);
+          }
+        }
       } else if (Platform.isWindows) {
         for (var drive in ['C:', 'D:', 'E:']) {
           final d = Directory(drive + r'\');
